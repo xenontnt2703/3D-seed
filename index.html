@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Texture Particle System</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: sans-serif; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        
+        /* UI Panel */
+        #ui-container {
+            position: absolute; top: 20px; left: 20px; z-index: 10;
+            background: rgba(15, 15, 20, 0.8); backdrop-filter: blur(8px);
+            padding: 20px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);
+            color: white; width: 320px;
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+
+        #ui-container.hidden { opacity: 0; pointer-events: none; transform: translateX(-20px); }
+
+        h1 { margin: 0 0 10px 0; font-size: 18px; color: #00ffff; }
+        .info { font-size: 13px; color: #ccc; margin-bottom: 5px; line-height: 1.5; }
+        .gesture-list { font-size: 12px; color: #aaa; margin-top: 10px; padding-left: 15px; }
+        .gesture-list li { margin-bottom: 4px; }
+        
+        #status {
+            margin-top: 15px; padding: 8px; border-radius: 4px;
+            background: rgba(255, 165, 0, 0.2); color: #ffb74d;
+            font-size: 12px; font-weight: bold; text-align: center;
+        }
+        #status.active { background: rgba(0, 255, 127, 0.2); color: #69f0ae; }
+        
+        /* Camera Preview */
+        .input_video { display: none; }
+        #camera-preview {
+            position: absolute; bottom: 20px; right: 20px; 
+            width: 160px; height: 120px; z-index: 10; border-radius: 8px; 
+            border: 2px solid rgba(255,255,255,0.2);
+            transform: scaleX(-1); background: #000; opacity: 0.8;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+        }
+        
+        .controls { margin-top: 15px; }
+        .control-group { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 13px; }
+        input[type="color"] { border: none; width: 40px; height: 25px; background: none; cursor: pointer; }
+        
+        #toggle-ui-btn {
+            position: absolute; top: 20px; left: 20px; z-index: 20;
+            background: rgba(0, 255, 255, 0.2); border: 1px solid #00ffff;
+            color: #00ffff; border-radius: 50%; width: 40px; height: 40px;
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+            font-size: 20px; transition: all 0.3s;
+        }
+        #toggle-ui-btn:hover { background: rgba(0, 255, 255, 0.4); box-shadow: 0 0 10px #00ffff; }
+        #ui-container:not(.hidden) + #toggle-ui-btn {
+            top: 25px; left: 300px; width: 30px; height: 30px; font-size: 14px; background: transparent; border: none; color: #666;
+        }
+        #ui-container:not(.hidden) + #toggle-ui-btn:hover { color: white; }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <video class="input_video"></video>
+    
+    <div id="ui-container">
+        <h1>Multi-Texture Particles</h1>
+        <div class="info">Giơ tay điều khiển:</div>
+        <ul class="gesture-list">
+            <li>✊ 0 ngón: Hình cầu (Reset)</li>
+            <li>☝️ 1 ngón: "Hello"</li>
+            <li>✌️ 2 ngón: "24/12/2025"</li>
+            <li>👌 3 ngón: "Happy birthday"</li>
+            <li>🖖 4 ngón: "hwamin"</li>
+            <li style="color: #ff00ff; font-weight: bold;">🖐 5 ngón: BUNG VŨ TRỤ (Trộn Tất Cả Ảnh) ✨</li>
+        </ul>
+        
+        <div class="controls">
+            <div class="control-group">
+                <label>Màu hạt (chế độ thường):</label>
+                <input type="color" id="colorPicker" value="#00ffff">
+            </div>
+            <div style="font-size: 10px; color: #888; margin-top: 5px;">*5 ngón sẽ dùng ảnh gốc, không dùng màu này</div>
+        </div>
+
+        <div id="status">Đang tải tài nguyên...</div>
+        <div id="debug-fingers" style="font-size: 11px; margin-top: 5px; color: #888;">Số ngón: 0</div>
+    </div>
+
+    <button id="toggle-ui-btn" title="Ẩn/Hiện Bảng điều khiển">👁️</button>
+
+    <div id="canvas-container"></div>
+    <canvas id="camera-preview" width="160" height="120"></canvas>
+
+    <script>
+        // ==========================================
+        // 1. CẤU HÌNH ẢNH (DANH SÁCH ẢNH)
+        // ==========================================
+        const imageList = [
+            './anh1.jpg',
+            './anh2.jpg',
+            './anh3.jpg',
+            './anh4.jpg',
+            './anh5.jpg', 
+            './anh6.jpg',
+            './anh7.jpg',
+            './anh8.jpg',
+            './anh9.jpg',
+            './anh10.jpg',
+        ];
+
+        // ==========================================
+        // 2. KHỞI TẠO CƠ BẢN
+        // ==========================================
+        const uiContainer = document.getElementById('ui-container');
+        const toggleBtn = document.getElementById('toggle-ui-btn');
+        const statusDiv = document.getElementById('status');
+        const debugDiv = document.getElementById('debug-fingers');
+
+        toggleBtn.addEventListener('click', () => {
+            uiContainer.classList.toggle('hidden');
+            if (uiContainer.classList.contains('hidden')) {
+                toggleBtn.innerText = '👁️'; toggleBtn.style.left = '20px'; toggleBtn.style.top = '20px';
+            } else { toggleBtn.innerText = '✖'; }
+        });
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 3000);
+        camera.position.z = 400; 
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        // Tạo Texture mặc định (hình tròn)
+        function createCircleTexture() {
+            const c = document.createElement('canvas'); c.width = 32; c.height = 32;
+            const ctx = c.getContext('2d');
+            const grad = ctx.createRadialGradient(16,16,0,16,16,16);
+            grad.addColorStop(0, 'rgba(255,255,255,1)');
+            grad.addColorStop(0.5, 'rgba(255,255,255,0.5)');
+            grad.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = grad; ctx.fillRect(0,0,32,32);
+            const tex = new THREE.Texture(c); tex.needsUpdate = true; return tex;
+        }
+        const defaultTexture = createCircleTexture();
+
+        // ==========================================
+        // 3. XỬ LÝ ĐA HỆ THỐNG HẠT (MULTI-SYSTEM)
+        // ==========================================
+        
+        const totalParticles = 8100; // Số lượng tổng (nên chia hết cho số ảnh nếu có thể)
+        const loadedUserTextures = []; 
+        const particleGroups = []; // Mảng chứa các nhóm hạt con
+        
+        // Mảng toàn cục lưu vị trí để tính toán vật lý chung
+        const globalCurrentPositions = new Float32Array(totalParticles * 3);
+        const globalTargetPositions = new Float32Array(totalParticles * 3);
+
+        // Hàm tải ảnh Promise
+        function loadTextureAsync(url) {
+            return new Promise((resolve, reject) => {
+                new THREE.TextureLoader().load(url, 
+                    (tex) => resolve(tex),
+                    undefined,
+                    (err) => { console.warn("Lỗi tải ảnh:", url); resolve(null); } // Lỗi thì trả về null để không crash
+                );
+            });
+        }
+
+        async function initParticles() {
+            // Tải tất cả ảnh trước
+            const textures = await Promise.all(imageList.map(url => loadTextureAsync(url)));
+            // Lọc bỏ ảnh lỗi
+            textures.forEach(t => { if(t) loadedUserTextures.push(t); });
+
+            // Nếu không có ảnh nào tải được, dùng default
+            if (loadedUserTextures.length === 0) loadedUserTextures.push(defaultTexture);
+
+            const groupCount = loadedUserTextures.length;
+            const particlesPerGroup = Math.ceil(totalParticles / groupCount);
+
+            // Tạo các nhóm hạt
+            for (let g = 0; g < groupCount; g++) {
+                const geometry = new THREE.BufferGeometry();
+                const posArray = new Float32Array(particlesPerGroup * 3);
+                
+                // Khởi tạo vị trí ngẫu nhiên
+                for(let i=0; i<particlesPerGroup * 3; i++) {
+                    posArray[i] = (Math.random() - 0.5) * 800;
+                }
+                
+                // Map vị trí cục bộ vào mảng toàn cục để quản lý
+                const startIndex = g * particlesPerGroup;
+                for(let i=0; i<particlesPerGroup; i++) {
+                    const globalIdx = (startIndex + i) * 3;
+                    const localIdx = i * 3;
+                    globalCurrentPositions[globalIdx] = posArray[localIdx];
+                    globalCurrentPositions[globalIdx+1] = posArray[localIdx+1];
+                    globalCurrentPositions[globalIdx+2] = posArray[localIdx+2];
+                    
+                    // Khởi tạo target bằng current
+                    globalTargetPositions[globalIdx] = posArray[localIdx];
+                    globalTargetPositions[globalIdx+1] = posArray[localIdx+1];
+                    globalTargetPositions[globalIdx+2] = posArray[localIdx+2];
+                }
+
+                geometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+
+                // Material riêng cho nhóm này (để chứa texture riêng)
+                const material = new THREE.PointsMaterial({
+                    size: 3,
+                    map: defaultTexture, // Mặc định dùng hình tròn
+                    color: 0x00ffff,
+                    transparent: true,
+                    blending: THREE.AdditiveBlending,
+                    depthWrite: false
+                });
+
+                const points = new THREE.Points(geometry, material);
+                
+                // Lưu metadata để dùng sau này
+                particleGroups.push({
+                    mesh: points,
+                    originalTexture: loadedUserTextures[g], // Lưu texture ảnh gốc của nhóm này
+                    startIndex: startIndex,
+                    count: particlesPerGroup
+                });
+
+                scene.add(points);
+            }
+            
+            statusDiv.innerText = "Sẵn sàng! Hãy bật Camera.";
+            updateMorphTarget('sphere'); // Tạo hình cầu ban đầu
+        }
+
+        initParticles();
+
+        // ==========================================
+        // 4. CÁC HÀM TẠO HÌNH DÁNG (SHAPE GENERATORS)
+        // ==========================================
+
+        function createTextTarget(text) {
+            const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d');
+            const fontSize = 100; const fontFamily = 'Arial, sans-serif';
+            ctx.font = `bold ${fontSize}px ${fontFamily}`;
+            const textMetrics = ctx.measureText(text);
+            const width = Math.ceil(textMetrics.width); const height = fontSize * 1.5;
+            canvas.width = width; canvas.height = height;
+            ctx.font = `bold ${fontSize}px ${fontFamily}`;
+            ctx.fillStyle = 'white'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText(text, width / 2, height / 2);
+            
+            const imageData = ctx.getImageData(0, 0, width, height);
+            const data = imageData.data;
+            const validPoints = []; const step = 2; 
+            for (let y = 0; y < height; y += step) {
+                for (let x = 0; x < width; x += step) {
+                    if (data[((y * width + x) * 4) + 3] > 128) {
+                        validPoints.push({ x: (x - width / 2), y: -(y - height / 2) });
+                    }
+                }
+            }
+            return { points: validPoints };
+        }
+
+        function createSphereTarget() {
+            const points = []; const radius = 100;
+            for(let i=0; i<totalParticles; i++){
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos((Math.random() * 2) - 1);
+                points.push({
+                    x: radius * Math.sin(phi) * Math.cos(theta),
+                    y: radius * Math.sin(phi) * Math.sin(theta),
+                    z: radius * Math.cos(phi)
+                });
+            }
+            return points;
+        }
+
+        // ==========================================
+        // 5. CẬP NHẬT TRẠNG THÁI (UPDATE LOGIC)
+        // ==========================================
+
+        function updateMorphTarget(shapeType, textString = "") {
+            let points = []; 
+            let scaleFactor = 1.0;
+            const isUniverseMode = (shapeType === 'universe');
+
+            // Cập nhật Material cho TẤT CẢ các nhóm
+            particleGroups.forEach(group => {
+                if (isUniverseMode) {
+                    // Chế độ 5 ngón: Dùng ảnh gốc của nhóm đó
+                    group.mesh.material.map = group.originalTexture;
+                    group.mesh.material.size = 15; // To hơn để nhìn rõ ảnh
+                    group.mesh.material.color.setHex(0xffffff); // Màu trắng để hiển thị đúng màu ảnh
+                    group.mesh.material.opacity = 0.9;
+                } else {
+                    // Chế độ thường: Dùng hình tròn và màu từ color picker
+                    group.mesh.material.map = defaultTexture;
+                    group.mesh.material.size = 3;
+                    group.mesh.material.color.set(document.getElementById('colorPicker').value);
+                    group.mesh.material.opacity = 1.0;
+                }
+                group.mesh.material.needsUpdate = true;
+            });
+
+            // Tính toán vị trí đích
+            if (isUniverseMode) {
+                // Random vị trí lung tung
+                for(let i=0; i<totalParticles; i++){
+                    globalTargetPositions[i*3] = (Math.random() - 0.5) * 1500;
+                    globalTargetPositions[i*3+1] = (Math.random() - 0.5) * 1000;
+                    globalTargetPositions[i*3+2] = (Math.random() - 0.5) * 1000;
+                }
+            } else {
+                if (shapeType === 'sphere') {
+                    points = createSphereTarget();
+                } else if (shapeType === 'text') {
+                    const data = createTextTarget(textString);
+                    points = data.points;
+                    if (textString.length > 8) {
+                        scaleFactor = 12 / textString.length; 
+                        scaleFactor = Math.max(0.4, Math.min(scaleFactor, 1.5));
+                    } else { scaleFactor = 1.2; }
+                }
+
+                // Gán vị trí đích
+                for (let i = 0; i < totalParticles; i++) {
+                    const i3 = i * 3;
+                    if (i < points.length) {
+                        globalTargetPositions[i3] = points[i].x * scaleFactor;
+                        globalTargetPositions[i3+1] = points[i].y * scaleFactor;
+                        globalTargetPositions[i3+2] = (points[i].z || 0) * scaleFactor;
+                    } else {
+                        // Hạt dư thừa thì bay ra xa mờ nhạt hoặc về tâm
+                        globalTargetPositions[i3] = (Math.random()-0.5) * 500;
+                        globalTargetPositions[i3+1] = (Math.random()-0.5) * 500;
+                        globalTargetPositions[i3+2] = (Math.random()-0.5) * 500;
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // 6. MEDIAPIPE & CAMERA
+        // ==========================================
+        let lastFingerCount = -1;
+
+        function countExtendedFingers(landmarks) {
+            let count = 0;
+            const thumbTip = landmarks[4]; const thumbIP = landmarks[3]; const p17 = landmarks[17];
+            if (Math.sqrt(Math.pow(thumbTip.x-p17.x, 2) + Math.pow(thumbTip.y-p17.y, 2)) > 
+                Math.sqrt(Math.pow(thumbIP.x-p17.x, 2) + Math.pow(thumbIP.y-p17.y, 2))) count++;
+            
+            const tips = [8, 12, 16, 20]; const pips = [6, 10, 14, 18];
+            for (let i = 0; i < 4; i++) {
+                if (landmarks[tips[i]].y < landmarks[pips[i]].y) count++;
+            }
+            return count;
+        }
+
+        function onResults(results) {
+            const canvas = document.getElementById('camera-preview');
+            const canvasCtx = canvas.getContext('2d');
+            canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                statusDiv.innerText = "Đã nhận diện tay!";
+                statusDiv.classList.add('active');
+                const fingers = countExtendedFingers(results.multiHandLandmarks[0]);
+                debugDiv.innerText = `Số ngón: ${fingers}`;
+
+                if (fingers !== lastFingerCount) {
+                    lastFingerCount = fingers;
+                    switch (fingers) {
+                        case 0: updateMorphTarget('sphere'); break;
+                        case 1: updateMorphTarget('text', "Hello"); break;
+                        case 2: updateMorphTarget('text', "24/12/2025"); break;
+                        case 3: updateMorphTarget('text', "Happy Birthday"); break;
+                        case 4: updateMorphTarget('text', "Hwamin"); break;
+                        case 5: updateMorphTarget('universe'); break; 
+                        default: updateMorphTarget('sphere');
+                    }
+                }
+            } else {
+                statusDiv.innerText = "Đang chờ bàn tay...";
+                statusDiv.classList.remove('active');
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+        hands.onResults(onResults);
+
+        const videoElement = document.getElementsByClassName('input_video')[0];
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
+        });
+        cameraUtils.start();
+
+        // ==========================================
+        // 7. ANIMATION LOOP
+        // ==========================================
+        
+        // Sự kiện đổi màu color picker
+        document.getElementById('colorPicker').addEventListener('input', (e) => {
+            if (lastFingerCount !== 5) {
+                particleGroups.forEach(g => g.mesh.material.color.set(e.target.value));
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        const clock = new THREE.Clock();
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = clock.getElapsedTime();
+            const lerpSpeed = 0.08; 
+
+            // 1. Tính toán vị trí vật lý trên mảng toàn cục (Global Array)
+            for(let i=0; i<totalParticles; i++) {
+                const i3 = i * 3;
+                globalCurrentPositions[i3]   += (globalTargetPositions[i3]   - globalCurrentPositions[i3])   * lerpSpeed;
+                globalCurrentPositions[i3+1] += (globalTargetPositions[i3+1] - globalCurrentPositions[i3+1]) * lerpSpeed;
+                globalCurrentPositions[i3+2] += (globalTargetPositions[i3+2] - globalCurrentPositions[i3+2]) * lerpSpeed;
+
+                // Hiệu ứng lung linh nhẹ
+                if (Math.abs(globalTargetPositions[i3] - globalCurrentPositions[i3]) < 20) {
+                    globalCurrentPositions[i3] += Math.sin(time * 3 + i) * 0.2;
+                    globalCurrentPositions[i3+1] += Math.cos(time * 2 + i) * 0.2;
+                }
+            }
+
+            // 2. Đồng bộ vị trí từ mảng toàn cục về từng nhóm hạt (Sub-systems)
+            particleGroups.forEach(group => {
+                const positions = group.mesh.geometry.attributes.position.array;
+                const start = group.startIndex;
+                const count = group.count;
+
+                for(let j=0; j<count; j++) {
+                    const globalIdx = (start + j) * 3;
+                    const localIdx = j * 3;
+                    positions[localIdx]   = globalCurrentPositions[globalIdx];
+                    positions[localIdx+1] = globalCurrentPositions[globalIdx+1];
+                    positions[localIdx+2] = globalCurrentPositions[globalIdx+2];
+                }
+                group.mesh.geometry.attributes.position.needsUpdate = true;
+
+                // Xoay nhẹ hệ thống
+                if (lastFingerCount === 5) {
+                    group.mesh.rotation.y += 0.001;
+                    group.mesh.rotation.x += 0.0005;
+                } else if (lastFingerCount === 0 || lastFingerCount === -1) {
+                    group.mesh.rotation.y = time * 0.1;
+                } else {
+                    group.mesh.rotation.y += (0 - group.mesh.rotation.y) * 0.05;
+                    group.mesh.rotation.x += (0 - group.mesh.rotation.x) * 0.05;
+                }
+            });
+
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
